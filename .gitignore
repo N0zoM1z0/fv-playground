@@ -1,0 +1,32 @@
+# TLA+ generated files
+*.bin
+*.fp
+*.st
+*_TTrace_*.tla
+states/
+
+# TLC output files
+*.out
+*.dump
+
+# Java
+*.class
+*.jar
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
