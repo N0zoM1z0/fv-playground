@@ -1,0 +1,1 @@
+/home/pentester/.vscode-server/extensions/tlaplus.vscode-ide-2026.2.260238/tools/
