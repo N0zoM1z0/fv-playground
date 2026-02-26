@@ -4,6 +4,7 @@
 *.st
 *_TTrace_*.tla
 states/
+*.tlc
 
 # TLC output files
 *.out
