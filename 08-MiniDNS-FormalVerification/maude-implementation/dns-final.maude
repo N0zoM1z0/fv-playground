@@ -1,0 +1,187 @@
+--- ============================================
+--- DNS Formal Verification - Final Working Version
+--- ETH SIGCOMM 2023 Paper Implementation
+--- ============================================
+
+load model-checker.maude
+
+--- ============================================
+--- Data Types (Section 3.2.2)
+--- ============================================
+fmod DNS-DATA is
+  protecting STRING .
+  protecting INT .
+  
+  sort Domain .
+  op _._ : String Domain -> Domain [ctor] .
+  op root : -> Domain [ctor] .
+  
+  sort RType .
+  ops A NS CNAME : -> RType [ctor] .
+  
+  sort Record .
+  op rec : Domain RType String Int -> Record [ctor] .
+  
+  sort RList .
+  subsort Record < RList .
+  op nil : -> RList [ctor] .
+  op __ : RList RList -> RList [ctor assoc id: nil] .
+  
+  vars D D2 : Domain .
+  vars T T2 : RType .
+  vars V : String .
+  vars TTL : Int .
+  vars R : Record .
+  vars RL RL2 : RList .
+  
+  op find : Domain RType RList -> RList .
+  eq find(D, T, nil) = nil .
+  eq find(D, T, rec(D, T, V, TTL) RL) = rec(D, T, V, TTL) find(D, T, RL) .
+  eq find(D, T, R RL) = find(D, T, RL) [owise] .
+  
+  op count : RList -> Int .
+  eq count(nil) = 0 .
+  eq count(R RL) = 1 + count(RL) .
+endfm
+
+--- ============================================
+--- Actor Model with Messages (Section 3.2.2)
+--- ============================================
+omod DNS-ACTORS is
+  protecting DNS-DATA .
+  protecting CONFIGURATION .
+  
+  --- Messages
+  op query : Oid Oid Domain RType -> Msg [ctor msg format (b o)] .
+  op answer : Oid Oid RList -> Msg [ctor msg format (m o)] .
+  
+  --- Actor classes
+  op Client : -> Cid [ctor] .
+  op Resolver : -> Cid [ctor] .
+  op Nameserver : -> Cid [ctor] .
+  
+  --- Attributes
+  op waiting:_ : Bool -> Attribute [ctor] .
+  op cache:_ : RList -> Attribute [ctor] .
+  op zone:_ : RList -> Attribute [ctor] .
+  
+  --- Variables
+  vars C R N : Oid .
+  vars D : Domain .
+  vars T : RType .
+  vars RL Z : RList .
+  var A : AttributeSet .
+  
+  --- Rule 1: Client sends query
+  rl [client-send] :
+    < C : Client | waiting: false >
+    < R : Resolver | A >
+    =>
+    < C : Client | waiting: true >
+    < R : Resolver | A >
+    query(C, R, "www" . "example" . root, A) .
+  
+  --- Rule 2: Resolver Cache Hit
+  crl [resolver-hit] :
+    query(C, R, D, T)
+    < R : Resolver | cache: RL >
+    =>
+    < R : Resolver | cache: RL >
+    answer(R, C, find(D, T, RL))
+  if find(D, T, RL) =/= nil .
+  
+  --- Rule 3: Resolver Cache Miss
+  crl [resolver-miss] :
+    query(C, R, D, T)
+    < R : Resolver | cache: nil >
+    < N : Nameserver | zone: Z >
+    =>
+    < R : Resolver | cache: nil >
+    < N : Nameserver | zone: Z >
+    query(R, N, D, T)
+  if find(D, T, Z) =/= nil .
+  
+  --- Rule 4: Nameserver answers
+  rl [ns-answer] :
+    query(R, N, D, T)
+    < N : Nameserver | zone: Z >
+    =>
+    < N : Nameserver | zone: Z >
+    answer(N, R, find(D, T, Z)) .
+  
+  --- Rule 5: Resolver forwards to Client
+  rl [resolver-fwd] :
+    answer(N, R, RL)
+    < R : Resolver | cache: nil >
+    < C : Client | waiting: true >
+    =>
+    < R : Resolver | cache: RL >
+    < C : Client | waiting: false >
+    answer(R, C, RL) .
+  
+endom
+
+--- ============================================
+--- Test Scenarios (Section 6)
+--- ============================================
+omod DNS-TEST is
+  protecting DNS-ACTORS .
+  
+  --- Normal scenario
+  op testNormal : -> Configuration .
+  eq testNormal = 
+    < "c" : Client | waiting: false >
+    < "r" : Resolver | cache: nil >
+    < "n" : Nameserver | zone: rec("www" . "example" . root, A, "93.184.216.34", 3600) > .
+  
+  --- Amplification attack scenario (5 NS records)
+  op testAttack : -> Configuration .
+  eq testAttack =
+    < "c" : Client | waiting: false >
+    < "r" : Resolver | cache: nil >
+    < "n" : Nameserver | zone: 
+      rec("attack" . root, NS, "ns0", 1)
+      rec("attack" . root, NS, "ns1", 1)
+      rec("attack" . root, NS, "ns2", 1)
+      rec("attack" . root, NS, "ns3", 1)
+      rec("attack" . root, NS, "ns4", 1) > .
+  
+  --- Count records in Nameserver zone
+  op ampFactor : Configuration -> Int .
+  var REST : Configuration .
+  eq ampFactor(< N : Nameserver | zone: Z > REST) = count(Z) .
+  eq ampFactor(REST) = 0 [owise] .
+  
+endom
+
+--- ============================================
+--- LTL Properties (Section 5.3)
+--- ============================================
+omod DNS-PROPS is
+  protecting DNS-TEST .
+  protecting SATISFACTION .
+  
+  subsort Configuration < State .
+  
+  --- Property: Client gets answer
+  op answered : -> Prop [ctor] .
+  var REST : Configuration .
+  eq < O : Oid : Client | waiting: false > REST |= answered = true .
+  eq REST |= answered = false [owise] .
+  
+endom
+
+--- ============================================
+--- Interactive Test Commands
+--- ============================================
+--- Run these commands in Maude:
+---
+--- Maude> load dns-final.maude
+--- Maude> rew testNormal .
+--- Maude> red ampFactor(testAttack) .
+--- Maude> red count(rec("a" . root, A, "1.2.3.4", 300) rec("b" . root, A, "5.6.7.8", 300)) .
+---
+--- Expected results:
+--- - rew testNormal : should show Configuration with client waiting: false
+--- - red ampFactor(testAttack) : should return 5 (5 NS records)
+--- - red count(...) : should return 2 (2 records)

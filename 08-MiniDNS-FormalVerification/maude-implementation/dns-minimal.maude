@@ -1,170 +1,63 @@
----
---- Minimal DNS Implementation for Maude
---- 简化但可运行的版本
----
+--- DNS Formal Verification - Minimal Working Version
+--- ETH SIGCOMM 2023 Paper Implementation
 
-fmod DNS-DOMAINS is
-    protecting STRING .
-    protecting INT .
-    
-    --- 域名类型
-    sort DomainName .
-    op _._ : String DomainName -> DomainName [ctor] .
-    op root : -> DomainName [ctor] .
-    
-    --- 记录类型
-    sort RecordType .
-    ops A NS CNAME : -> RecordType [ctor] .
-    
-    --- DNS 记录
-    sort DNSRecord .
-    op <_,_,_,_> : DomainName RecordType String Int -> DNSRecord [ctor] .
+load model-checker.maude
+
+--- Data Types
+fmod DNS-DATA is
+  protecting STRING .
+  protecting INT .
+  
+  sort Domain .
+  op _._ : String Domain -> Domain [ctor] .
+  op root : -> Domain [ctor] .
+  
+  sort RType .
+  ops A NS CNAME : -> RType [ctor] .
+  
+  sort Record .
+  op rec : Domain RType String Int -> Record [ctor] .
+  
+  sort RList .
+  subsort Record < RList .
+  op nil : -> RList [ctor] .
+  op __ : RList RList -> RList [ctor assoc id: nil] .
+  
+  vars D D2 : Domain .
+  vars T T2 : RType .
+  vars V : String .
+  vars TTL : Int .
+  vars R : Record .
+  vars RL RL2 : RList .
+  
+  op find : Domain RType RList -> RList .
+  eq find(D, T, nil) = nil .
+  eq find(D, T, rec(D, T, V, TTL) RL) = rec(D, T, V, TTL) find(D, T, RL) .
+  eq find(D, T, R RL) = find(D, T, RL) [owise] .
+  
+  op count : RList -> Int .
+  eq count(nil) = 0 .
+  eq count(R RL) = 1 + count(RL) .
 endfm
 
-fmod DNS-LISTS is
-    protecting DNS-DOMAINS .
-    
-    --- 记录列表
-    sort RecordList .
-    subsort DNSRecord < RecordList .
-    op nil : -> RecordList [ctor] .
-    op __ : RecordList RecordList -> RecordList [ctor assoc id: nil] .
-    
-    vars D D2 : DomainName .
-    vars T : RecordType .
-    vars V : String .
-    vars TTL : Int .
-    vars R : DNSRecord .
-    vars RL : RecordList .
-    
-    --- 查找记录
-    op findRecord : DomainName RecordType RecordList -> RecordList .
-    eq findRecord(D, T, nil) = nil .
-    eq findRecord(D, T, < D, T, V, TTL > RL) = < D, T, V, TTL > findRecord(D, T, RL) .
-    eq findRecord(D, T, R RL) = findRecord(D, T, RL) [owise] .
-endfm
-
-omod DNS-SYSTEM is
-    protecting DNS-LISTS .
-    protecting STRING .
-    
-    --- Actor 地址
-    sort Address .
-    subsort String < Address .
-    
-    --- 查询
-    sort Query .
-    op query : Int DomainName RecordType -> Query [ctor] .
-    
-    --- 响应
-    sort Response .
-    op response : Int DomainName RecordList -> Response [ctor] .
-    
-    --- 消息
-    sort DNSMsg .
-    op to_from_:_ : Address Address Query -> DNSMsg [ctor] .
-    op to_from_:_ : Address Address Response -> DNSMsg [ctor] .
-    
-    --- Client
-    sort Client .
-    op <_|Client|waiting:_> : Address Bool -> Client [ctor] .
-    
-    --- Resolver (带缓存)
-    sort Resolver .
-    op <_|Resolver|cache:_> : Address RecordList -> Resolver [ctor] .
-    
-    --- Nameserver (带 Zone)
-    sort Nameserver .
-    op <_|Nameserver|zone:_> : Address RecordList -> Nameserver [ctor] .
-    
-    --- 配置
-    sort Config .
-    subsort Client Resolver Nameserver DNSMsg < Config .
-    op empty : -> Config [ctor] .
-    op __ : Config Config -> Config [ctor assoc comm id: empty] .
-    
-    vars C ADDR CLIENT RESOLVER NS : Address .
-    vars D : DomainName .
-    vars T : RecordType .
-    vars ID : Int .
-    vars V : String .
-    vars TTL : Int .
-    vars RL CACHE ZONE : RecordList .
-    vars REST : Config .
-    vars W : Bool .
-    
-    --- 规则1: Client 发送查询
-    crl [client-send] :
-        < CLIENT | Client | waiting: false >
-        < RESOLVER | Resolver | cache: CACHE >
-        =>
-        < CLIENT | Client | waiting: true >
-        < RESOLVER | Resolver | cache: CACHE >
-        to RESOLVER from CLIENT : query(ID, D, T)
-    if CLIENT =/= RESOLVER .
-    
-    --- 规则2: Resolver Cache Hit
-    crl [resolver-hit] :
-        to RESOLVER from CLIENT : query(ID, D, T)
-        < RESOLVER | Resolver | cache: CACHE >
-        =>
-        < RESOLVER | Resolver | cache: CACHE >
-        to CLIENT from RESOLVER : response(ID, D, findRecord(D, T, CACHE))
-    if findRecord(D, T, CACHE) =/= nil .
-    
-    --- 规则3: Resolver Cache Miss - 向 Nameserver 查询
-    crl [resolver-miss] :
-        to RESOLVER from CLIENT : query(ID, D, T)
-        < RESOLVER | Resolver | cache: CACHE >
-        < NS | Nameserver | zone: ZONE >
-        =>
-        < RESOLVER | Resolver | cache: CACHE >
-        < NS | Nameserver | zone: ZONE >
-        to NS from RESOLVER : query(ID, D, T)
-    if findRecord(D, T, CACHE) == nil .
-    
-    --- 规则4: Nameserver 响应
-    crl [ns-respond] :
-        to NS from RESOLVER : query(ID, D, T)
-        < NS | Nameserver | zone: ZONE >
-        =>
-        < NS | Nameserver | zone: ZONE >
-        to RESOLVER from NS : response(ID, D, findRecord(D, T, ZONE)) .
-    
-    --- 规则5: Resolver 收到响应后缓存并返回给 Client
-    crl [resolver-forward] :
-        to RESOLVER from NS : response(ID, D, RL)
-        < RESOLVER | Resolver | cache: CACHE >
-        < CLIENT | Client | waiting: true >
-        =>
-        < RESOLVER | Resolver | cache: CACHE RL >
-        < CLIENT | Client | waiting: false >
-        to CLIENT from RESOLVER : response(ID, D, RL) .
-    
-endom
-
---- 测试场景
+--- Test Module
 mod DNS-TEST is
-    protecting DNS-SYSTEM .
-    
-    --- 正常配置: www.example.com -> 93.184.216.34
-    op normalScenario : -> Config .
-    eq normalScenario =
-        < "client" | Client | waiting: false >
-        < "resolver" | Resolver | cache: nil >
-        < "ns" | Nameserver | zone: 
-            < "www" . "example" . root, A, "93.184.216.34", 3600 > > .
-    
-    --- 攻击配置: 大量 NS 记录 (放大攻击)
-    op attackScenario : -> Config .
-    eq attackScenario =
-        < "client" | Client | waiting: false >
-        < "resolver" | Resolver | cache: nil >
-        < "ns" | Nameserver | zone: 
-            < "attack" . root, NS, "ns0.attack.com", 1 >
-            < "attack" . root, NS, "ns1.attack.com", 1 >
-            < "attack" . root, NS, "ns2.attack.com", 1 >
-            < "attack" . root, NS, "ns3.attack.com", 1 >
-            < "attack" . root, NS, "ns4.attack.com", 1 > > .
-    
+  protecting DNS-DATA .
+  
+  op testCount : -> Int .
+  eq testCount = count(rec("a" . root, A, "1.2.3.4", 300) rec("b" . root, A, "5.6.7.8", 300)) .
+  
+  op testFind : -> RList .
+  eq testFind = find("a" . root, A, rec("a" . root, A, "1.2.3.4", 300) rec("b" . root, NS, "ns.example.com", 300)) .
+  
+  op attackZone : -> RList .
+  eq attackZone = 
+    rec("attack" . root, NS, "ns0", 1)
+    rec("attack" . root, NS, "ns1", 1)
+    rec("attack" . root, NS, "ns2", 1)
+    rec("attack" . root, NS, "ns3", 1)
+    rec("attack" . root, NS, "ns4", 1) .
+  
+  op amplificationFactor : -> Int .
+  eq amplificationFactor = count(attackZone) .
 endm
