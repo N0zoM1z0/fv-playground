@@ -1,0 +1,120 @@
+---
+--- DNS Actors Module (Fixed)
+--- Actor 模型定义 - 避免与 prelude 冲突
+---
+
+load dns-types.maude
+
+omod DNS-ACTORS is
+    protecting DNS-TYPES .
+    protecting STRING .
+    protecting INT .
+    protecting BOOL .
+    
+    --- Actor 地址
+    sort Address .
+    subsort String < Address .
+    
+    --- 消息内容
+    sort DNSMsgContent .
+    subsort Query Response < DNSMsgContent .
+    
+    --- DNS 消息 (避免与 prelude 的 Msg 冲突)
+    sort DNSMsg .
+    op to_from_:_ : Address Address DNSMsgContent -> DNSMsg [ctor] .
+    
+    --- 查询列表
+    sort QueryList .
+    subsort Query < QueryList .
+    op noQuery : -> QueryList [ctor] .
+    op _;_ : QueryList QueryList -> QueryList [ctor assoc id: noQuery] .
+    
+    --- 缓存
+    sort Cache .
+    op emptyCache : -> Cache [ctor] .
+    op cacheEntry : DomainName RecordType DNSRecord -> Cache [ctor] .
+    op _;_ : Cache Cache -> Cache [ctor assoc comm id: emptyCache] .
+    
+    --- 待处理查询
+    sort PendingQueries .
+    op noPending : -> PendingQueries [ctor] .
+    op pending : Int DomainName RecordType Address Int -> PendingQueries [ctor] .
+    op _||_ : PendingQueries PendingQueries -> PendingQueries [ctor assoc id: noPending] .
+    
+    --- 服务器列表
+    sort ServerList .
+    subsort Address < ServerList .
+    op noServer : -> ServerList [ctor] .
+    op _;_ : ServerList ServerList -> ServerList [ctor assoc id: noServer] .
+    
+    --- Zone
+    sort Zone .
+    op emptyZone : -> Zone [ctor] .
+    op zoneEntry : DomainName RecordList -> Zone [ctor] .
+    op _&_ : Zone Zone -> Zone [ctor assoc comm id: emptyZone] .
+    
+    --- Actor 类型
+    sort Actor .
+    
+    --- Client
+    sort Client .
+    op <_|Client|queries:_,waiting:_> : Address QueryList Bool -> Client [ctor] .
+    
+    --- Resolver
+    sort Resolver .
+    op <_|Resolver|cache:_,pending:_,sbelt:_> : 
+        Address Cache PendingQueries ServerList -> Resolver [ctor] .
+    
+    --- Nameserver
+    sort Nameserver .
+    op <_|Nameserver|zone:_> : Address Zone -> Nameserver [ctor] .
+    
+    --- DNS 配置 (避免与 prelude 的 Configuration 冲突)
+    sort DNSConfiguration .
+    subsort Client Resolver Nameserver DNSMsg < DNSConfiguration .
+    op emptyConfig : -> DNSConfiguration [ctor] .
+    op __ : DNSConfiguration DNSConfiguration -> DNSConfiguration [ctor assoc comm id: emptyConfig] .
+    
+    --- 变量
+    vars ADDR ADDR2 SRC DST : Address .
+    vars D D2 : DomainName .
+    vars T : RecordType .
+    vars ID : Int .
+    vars RL : RecordList .
+    vars C : Cache .
+    vars S : ServerList .
+    vars Z : Zone .
+    
+    --- 缓存查找
+    op lookupCache : DomainName RecordType Cache -> RecordList .
+    eq lookupCache(D, T, emptyCache) = nil .
+    eq lookupCache(D, T, cacheEntry(D, T, < D, T, V, TTL >) C) = < D, T, V, TTL > .
+    eq lookupCache(D, T, cacheEntry(D2, T2, R) C) = lookupCache(D, T, C) [owise] .
+    
+    --- Zone 查找
+    op lookupZone : DomainName RecordType Zone -> RecordList .
+    eq lookupZone(D, T, emptyZone) = nil .
+    eq lookupZone(D, T, zoneEntry(D, RL) Z) = findRecord(D, T, RL) .
+    eq lookupZone(D, T, zoneEntry(D2, RL) Z) = lookupZone(D, T, Z) [owise] .
+    
+    --- NS 查找
+    op lookupNS : DomainName Zone -> RecordList .
+    eq lookupNS(D, emptyZone) = nil .
+    eq lookupNS(D, zoneEntry(D, RL) Z) = findRecord(D, NS, RL) .
+    eq lookupNS(D, zoneEntry(D2, RL) Z) = lookupNS(D, Z) [owise] .
+    
+endom
+
+--- 测试
+mod DNS-ACTORS-TEST is
+    protecting DNS-ACTORS .
+    
+    op testConfig : -> DNSConfiguration .
+    eq testConfig = 
+        < "client" | Client | queries: query(1, "www" . "example" . root, A); noQuery, waiting: false >
+        < "resolver" | Resolver | cache: emptyCache, pending: noPending, sbelt: "root" ; noServer >
+        < "root" | Nameserver | zone: zoneEntry("example" . root, 
+            < "example" . root, NS, "ns.example.com", 3600 >
+            < "ns.example.com", A, "1.2.3.4", 3600 >
+        ) > .
+endm

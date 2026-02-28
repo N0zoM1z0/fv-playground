@@ -1,0 +1,149 @@
+---
+--- DNS Probabilistic Model
+--- PMaude 风格的概率/时间模型
+--- 对应论文 Section 3.3 "Probabilistic Model"
+---
+
+load dns-rules.maude
+
+omod DNS-PROBABILISTIC is
+    protecting DNS-RULES .
+    protecting FLOAT .
+    
+    --- ============================================
+    --- 时间/概率扩展
+    --- ============================================
+    
+    --- 全局时间
+    sort GlobalTime .
+    op gt : Float -> GlobalTime [ctor] .
+    
+    --- 带时间戳的消息
+    sort TimedMsg .
+    op {_`,_} : GlobalTime Msg -> TimedMsg [ctor] .  --- 立即送达: {GT, msg}
+    op [_`,_] : GlobalTime Msg -> TimedMsg [ctor] .  --- 延迟送达: [GT+d, msg]
+    
+    --- 调度器 Actor (维护全局时间)
+    sort Scheduler .
+    op <_|Scheduler|queue:_,current:_> : 
+        Address TimedMsgList Float -> Scheduler [ctor] .
+    
+    sort TimedMsgList .
+    subsort TimedMsg < TimedMsgList .
+    op emptyQueue : -> TimedMsgList [ctor] .
+    op _|_ : TimedMsgList TimedMsgList -> TimedMsgList [ctor assoc id: emptyQueue] .
+    
+    --- 扩展配置包含调度器
+    sort TimedConfiguration .
+    subsort Configuration Scheduler < TimedConfiguration .
+    op {_} : TimedConfiguration -> TimedConfiguration [ctor] .
+    op __ : TimedConfiguration TimedConfiguration -> TimedConfiguration [ctor assoc comm] .
+    
+    --- ============================================
+    --- 变量
+    --- ============================================
+    
+    vars GT GT2 DELIVERY : Float .
+    vars ADDR ADDR2 SRC DST SCHED : Address .
+    vars D : DomainName .
+    vars T : RecordType .
+    vars ID : Int .
+    vars M : Msg .
+    vars TM TM2 : TimedMsg .
+    vars TML TML2 : TimedMsgList .
+    vars REST : Configuration .
+    vars TC : TimedConfiguration .
+    
+    --- ============================================
+    --- 调度器规则
+    --- ============================================
+    
+    --- 规则: 调度器推进时间到下一个消息
+    --- 选择 delivery_time 最小的消息
+    crl [scheduler-step] :
+        < SCHED | Scheduler | queue: {gt(GT2), M} | TML, current: GT >
+        =>
+        < SCHED | Scheduler | queue: TML, current: GT2 >
+        { M }
+    if GT2 >= GT .
+    
+    --- 规则: 处理延迟消息，推进全局时间
+    crl [scheduler-advance] :
+        < SCHED | Scheduler | queue: [gt(GT2), M] | TML, current: GT >
+        =>
+        < SCHED | Scheduler | queue: TML | {gt(GT2), M}, current: GT2 >
+    if GT2 > GT .
+    
+    --- ============================================
+    --- 消息发送规则 (添加延迟)
+    --- ============================================
+    
+    --- 概率延迟分布 (简化版)
+    --- 实际 PMaude 使用 lognormal 分布
+    op sampleDelay : Float -> Float .
+    eq sampleDelay(GT) = GT + 0.1 .  --- 简化：固定 0.1s 延迟
+    
+    --- 规则: 发送消息时添加延迟
+    crl [send-with-delay] :
+        to DST from SRC : M
+        < SCHED | Scheduler | queue: TML, current: GT >
+        =>
+        < SCHED | Scheduler | queue: TML | [gt(sampleDelay(GT)), to DST from SRC : M], current: GT >
+    if SCHED == "scheduler" .
+    
+endom
+
+--- ============================================
+--- 概率重写规则示例
+--- ============================================
+
+omod DNS-PROBABILISTIC-RULES is
+    protecting DNS-PROBABILISTIC .
+    
+    vars ADDR ADDR2 SRC DST : Address .
+    vars D : DomainName .
+    vars T : RecordType .
+    vars ID : Int .
+    vars GT : Float .
+    vars REST : Configuration .
+    vars SCHED : Address .
+    
+    --- 带时间的 Cache Hit 规则
+    crl [timed-resolver-cache-hit] :
+        { to RESOLVER from CLIENT : query(ID, D, T) }
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        < SCHED | Scheduler | queue: TML, current: GT >
+        =>
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        < SCHED | Scheduler | queue: 
+            TML | [gt(GT + 0.05), to CLIENT from RESOLVER : response(ID, D, lookupCache(D, T, C), nil, 0)], 
+            current: GT >
+    if lookupCache(D, T, C) =/= nil .
+    
+    --- 丢包模拟 (10% 概率)
+    op drop? : -> Bool .
+    --- 实际使用随机数，这里简化演示
+    
+endom
+
+--- ============================================
+--- 测试
+--- ============================================
+
+mod DNS-PROBABILISTIC-TEST is
+    protecting DNS-PROBABILISTIC-RULES .
+    
+    --- 简单的时间测试配置
+    op timedTest : -> TimedConfiguration .
+    eq timedTest =
+        < "scheduler" | Scheduler | queue: 
+            {gt(0.0), to "resolver" from "client" : query(1, "www" . "example" . root, A)} | 
+            emptyQueue, 
+            current: 0.0 >
+        < "client" | Client | queries: noQuery, waiting: true >
+        < "resolver" | Resolver | cache: emptyCache, pending: noPending, sbelt: "ns" ; noServer >
+        < "ns" | Nameserver | zone: zoneEntry("www" . "example" . root,
+            < "www" . "example" . root, A, "1.2.3.4", 3600 >
+        ) > .
+        
+endm

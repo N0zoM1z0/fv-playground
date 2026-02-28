@@ -1,0 +1,173 @@
+--- ============================================
+--- DNS Formal Verification - Working Version
+--- ETH SIGCOMM 2023 Implementation
+--- ============================================
+
+load model-checker.maude
+
+--- ============================================
+--- Data Types (Section 3.2.2)
+--- ============================================
+fmod DNS-TYPES is
+  protecting STRING .
+  protecting INT .
+  
+  sort DomainName .
+  op _._ : String DomainName -> DomainName [ctor] .
+  op root : -> DomainName [ctor] .
+  
+  sort RecordType .
+  ops A NS CNAME : -> RecordType [ctor] .
+  
+  sort RR .
+  op <_,_,_,_> : DomainName RecordType Int String -> RR [ctor] .
+  
+  sort RRset .
+  subsort RR < RRset .
+  op nilRR : -> RRset [ctor] .
+  op __ : RRset RRset -> RRset [ctor assoc id: nilRR] .
+  
+  sort Query .
+  op query : Int DomainName RecordType -> Query [ctor] .
+  
+  sort Response .
+  op response : Int DomainName RRset RRset Int -> Response [ctor] .
+  
+  vars D D2 : DomainName .
+  vars T T2 : RecordType .
+  vars V : String .
+  vars TTL ID : Int .
+  vars R : RR .
+  vars RS : RRset .
+  
+  op findRR : DomainName RecordType RRset -> RRset .
+  eq findRR(D, T, nilRR) = nilRR .
+  eq findRR(D, T, < D, T, TTL, V > RS) = < D, T, TTL, V > findRR(D, T, RS) .
+  eq findRR(D, T, R RS) = findRR(D, T, RS) [owise] .
+  
+  op countRR : RRset -> Int .
+  eq countRR(nilRR) = 0 .
+  eq countRR(R RS) = 1 + countRR(RS) .
+endfm
+
+--- ============================================
+--- Actors (Section 3.2.2)
+--- ============================================
+omod DNS-ACTORS is
+  protecting DNS-TYPES .
+  protecting CONFIGURATION .
+  
+  op Client : -> Cid [ctor] .
+  op Resolver : -> Cid [ctor] .
+  op Nameserver : -> Cid [ctor] .
+  
+  op waiting:_ : Bool -> Attribute [ctor] .
+  op cache:_ : RRset -> Attribute [ctor] .
+  op db:_ : RRset -> Attribute [ctor] .
+  
+  op to_from_:_ : Oid Oid Query -> Msg [ctor msg] .
+  op to_from_:_ : Oid Oid Response -> Msg [ctor msg] .
+  
+  vars CLT RSV NS : Oid .
+  vars D : DomainName .
+  var T : RecordType .
+  var ID : Int .
+  vars RS ANS AUTH : RRset .
+  var ATTS : AttributeSet .
+  
+  --- Rule: Client sends query (specific domain)
+  rl [client-send] :
+    < CLT : Client | waiting: false >
+    < RSV : Resolver | ATTS >
+    =>
+    < CLT : Client | waiting: true >
+    < RSV : Resolver | ATTS >
+    to RSV from CLT : query(1, "www" . "example" . root, A) .
+  
+  --- Rule: Resolver cache hit
+  crl [resolver-hit] :
+    to RSV from CLT : query(ID, D, T)
+    < RSV : Resolver | cache: RS >
+    =>
+    < RSV : Resolver | cache: RS >
+    to CLT from RSV : response(ID, D, findRR(D, T, RS), nilRR, 0)
+  if findRR(D, T, RS) =/= nilRR .
+  
+  --- Rule: Resolver cache miss
+  crl [resolver-miss] :
+    to RSV from CLT : query(ID, D, T)
+    < RSV : Resolver | cache: nilRR >
+    < NS : Nameserver | db: RS >
+    =>
+    < RSV : Resolver | cache: nilRR >
+    < NS : Nameserver | db: RS >
+    to NS from RSV : query(ID, D, T)
+  if findRR(D, T, RS) =/= nilRR .
+  
+  --- Rule: Nameserver answers
+  rl [ns-answer] :
+    to NS from RSV : query(ID, D, T)
+    < NS : Nameserver | db: RS >
+    =>
+    < NS : Nameserver | db: RS >
+    to RSV from NS : response(ID, D, findRR(D, T, RS), findRR(D, NS, RS), 0) .
+  
+  --- Rule: Resolver forwards to client (Figure 5)
+  rl [resolver-fwd] :
+    to RSV from NS : response(ID, D, ANS, AUTH, 0)
+    < RSV : Resolver | cache: nilRR >
+    < CLT : Client | waiting: true >
+    =>
+    < RSV : Resolver | cache: ANS >
+    < CLT : Client | waiting: false >
+    to CLT from RSV : response(ID, D, ANS, AUTH, 0) .
+  
+endom
+
+--- ============================================
+--- Tests (Section 6)
+--- ============================================
+mod DNS-TESTS is
+  protecting DNS-ACTORS .
+  
+  op testNormal : -> Configuration .
+  eq testNormal = 
+    < "c" : Client | waiting: false >
+    < "r" : Resolver | cache: nilRR >
+    < "n" : Nameserver | db: < "www" . "example" . root, A, "93.184.216.34", 3600 > > .
+  
+  op testAttack : -> Configuration .
+  eq testAttack =
+    < "c" : Client | waiting: false >
+    < "r" : Resolver | cache: nilRR >
+    < "n" : Nameserver | db: 
+      < "attack" . root, NS, "ns0", 1 >
+      < "attack" . root, NS, "ns1", 1 >
+      < "attack" . root, NS, "ns2", 1 >
+      < "attack" . root, NS, "ns3", 1 >
+      < "attack" . root, NS, "ns4", 1 > > .
+  
+  op ampFactor : Configuration -> Int .
+  eq ampFactor(< "n" : Nameserver | db: RS > REST) = countRR(RS) .
+  eq ampFactor(REST) = 0 [owise] .
+  
+endm
+
+--- ============================================
+--- LTL Properties (Section 5.3)
+--- ============================================
+mod DNS-PROPS is
+  protecting DNS-TESTS .
+  protecting SATISFACTION .
+  
+  subsort Configuration < State .
+  
+  op answered : -> Prop [ctor] .
+  eq < O : Client | waiting: false > C |= answered = true .
+  eq C |= answered = false [owise] .
+  
+  op cached : -> Prop [ctor] .
+  eq < O : Resolver | cache: RS > C |= cached = RS =/= nilRR .
+  eq C |= cached = false [owise] .
+  
+endm

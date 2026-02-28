@@ -1,0 +1,126 @@
+---
+--- Rewrite Blackholing Attack Scenario
+--- 对应论文 Section 5.3 和 Figure 7
+--- 展示循环委派导致的死锁
+---
+
+load dns-analysis.maude
+
+omod DNS-REWRITING-BLACKHOLE is
+    protecting DNS-ANALYSIS .
+    
+    --- ============================================
+    --- 攻击场景配置
+    --- ============================================
+    
+    --- Zone A: a.com 委派给 ns.b.com (无胶水记录)
+    op zoneA : -> Zone .
+    eq zoneA = zoneEntry("a" . root,
+        < "a" . root, NS, "ns.b.com", 3600 >
+    ) .
+    
+    --- Zone B: b.com 委派给 ns.a.com (无胶水记录)
+    --- 这形成循环！
+    op zoneB : -> Zone .
+    eq zoneB = zoneEntry("b" . root,
+        < "b" . root, NS, "ns.a.com", 3600 >
+    ) .
+    
+    --- 攻击配置
+    op attackConfig : -> Configuration .
+    eq attackConfig =
+        --- Client 发起查询
+        < "client" | Client | 
+            queries: query(1, "a" . root, A); noQuery, 
+            waiting: false >
+        --- Resolver (初始缓存为空)
+        < "resolver" | Resolver | 
+            cache: emptyCache, 
+            pending: noPending, 
+            sbelt: "ns-a" ; "ns-b" ; noServer >
+        --- Nameserver A (管理 a.com)
+        < "ns-a" | Nameserver | zone: zoneA >
+        --- Nameserver B (管理 b.com)
+        < "ns-b" | Nameserver | zone: zoneB > .
+    
+    --- ============================================
+    --- LTL 属性检查
+    --- ============================================
+    
+    --- 安全属性: 最终客户端应该收到答案
+    --- LTL: <> clientAnswered
+    --- 在这个攻击场景下应该被违反
+    op safetyProperty : -> Formula .
+    eq safetyProperty = <> clientAnswered .
+    
+    --- 活锁检测: 查询深度持续增长
+    op livenessProperty : -> Formula .
+    eq livenessProperty = [] ~ queryDepthExceeded .
+    
+    --- ============================================
+    --- 模型检查命令 (在 Maude 提示符下执行)
+    --- ============================================
+    --- red modelCheck(attackConfig, safetyProperty) .
+    --- 期望: 返回反例路径 (counterexample)
+    
+    --- red modelCheck(attackConfig, livenessProperty) .
+    --- 期望: 返回反例 (查询深度超过限制)
+    
+endom
+
+--- ============================================
+--- 对比：安全配置 (无循环)
+--- ============================================
+
+omod DNS-SAFE-CONFIG is
+    protecting DNS-ANALYSIS .
+    
+    --- Zone A: a.com 委派给 ns.b.com
+    --- Zone B: b.com 有实际的 A 记录
+    op safeZoneA : -> Zone .
+    eq safeZoneA = zoneEntry("a" . root,
+        < "a" . root, NS, "ns.b.com", 3600 >
+        < "ns" . "b" . root, A, "1.2.3.4", 3600 >
+    ) .
+    
+    op safeZoneB : -> Zone .
+    eq safeZoneB = zoneEntry("b" . root,
+        < "www" . "b" . root, A, "93.184.216.34", 3600 >
+    ) .
+    
+    op safeConfig : -> Configuration .
+    eq safeConfig =
+        < "client" | Client | 
+            queries: query(1, "www" . "b" . root, A); noQuery, 
+            waiting: false >
+        < "resolver" | Resolver | 
+            cache: emptyCache, 
+            pending: noPending, 
+            sbelt: "ns-a" ; noServer >
+        < "ns-a" | Nameserver | zone: safeZoneA >
+        < "ns-b" | Nameserver | zone: safeZoneB > .
+    
+    --- 安全属性应该满足
+    --- red modelCheck(safeConfig, safetyProperty) .
+    --- 期望: true
+    
+endom
+
+--- ============================================
+--- 执行指令说明
+--- ============================================
+
+--- 1. 加载模块
+--- Maude> load dns-rewriting-blackhole.maude
+
+--- 2. 运行攻击场景 (单步模拟)
+--- Maude> rew attackConfig .
+
+--- 3. 搜索所有可达状态 (找循环)
+--- Maude> search attackConfig =>* C:Configuration .
+
+--- 4. LTL 模型检查 (找违反属性的反例)
+--- Maude> red modelCheck(attackConfig, <> clientAnswered) .
+
+--- 5. 对比安全配置
+--- Maude> red modelCheck(safeConfig, <> clientAnswered) .

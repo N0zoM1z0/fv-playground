@@ -1,0 +1,84 @@
+---
+--- Master file to run all DNS verification scenarios
+--- 运行所有测试场景
+---
+
+load dns-types.maude
+load dns-actors.maude
+load dns-rules.maude
+load dns-probabilistic.maude
+load dns-analysis.maude
+load dns-rewriting-blackhole.maude
+load dns-amplification.maude
+
+--- ============================================
+--- 主测试模块
+--- ============================================
+
+mod DNS-MASTER-TEST is
+    protecting DNS-REWRITING-BLACKHOLE .
+    protecting DNS-AMPLIFICATION .
+    
+    --- ============================================
+    --- 测试 1: 基础类型
+    --- ============================================
+    op runTypeTest : -> DomainName .
+    eq runTypeTest = "www" . "example" . root .
+    
+    --- ============================================
+    --- 测试 2: Rewrite Blackholing
+    --- ============================================
+    op runBlackholeTest : -> Configuration .
+    eq runBlackholeTest = attackConfig .
+    
+    --- ============================================
+    --- 测试 3: Amplification
+    --- ============================================
+    op runAmplificationTest : -> Configuration .
+    eq runAmplificationTest = amplificationAttack .
+    
+    --- ============================================
+    --- 测试 4: 安全配置对比
+    --- ============================================
+    op runSafeTest : -> Configuration .
+    eq runSafeTest = safeConfig .
+    
+endm
+
+--- ============================================
+--- 执行命令
+--- ============================================
+
+--- 加载本文件后，在 Maude 提示符下执行：
+
+--- 1. 基础重写测试
+--- Maude> rew runTypeTest .
+
+--- 2. Rewrite Blackholing 攻击
+--- Maude> rew runBlackholeTest .
+
+--- 3. DoS 放大攻击
+--- Maude> rew runAmplificationTest .
+
+--- 4. 安全配置
+--- Maude> rew runSafeTest .
+
+--- 5. LTL 模型检查 (需要安装 LTL 模型检查器)
+--- Maude> red modelCheck(runBlackholeTest, <> clientAnswered) .
+--- 预期: counterexample (反例)
+
+--- Maude> red modelCheck(runSafeTest, <> clientAnswered) .
+--- 预期: true
+
+--- 6. 搜索分析
+--- Maude> search runBlackholeTest =>* C:Configuration 
+---          such that C |= queryDepthExceeded .
+
+--- 7. 定量分析
+--- Maude> red amplificationFactor(runAmplificationTest) .
+--- Maude> red amplificationFactor(runSafeTest) .
+
+--- ============================================
+--- 退出
+--- ============================================
+--- Maude> q .

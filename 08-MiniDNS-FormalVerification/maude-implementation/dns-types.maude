@@ -1,0 +1,67 @@
+---
+--- DNS Types Module
+--- 基础数据类型定义
+---
+
+fmod DNS-TYPES is
+    protecting STRING .
+    protecting INT .
+    protecting BOOL .
+    
+    --- 域名类型
+    sort DomainName .
+    op _._ : String DomainName -> DomainName [ctor] .
+    op root : -> DomainName [ctor] .
+    
+    --- 记录类型
+    sort RecordType .
+    ops A NS CNAME SOA TXT : -> RecordType [ctor] .
+    
+    --- DNS 记录: <域名, 类型, 值, TTL>
+    sort DNSRecord .
+    op <_,_,_,_> : DomainName RecordType String Int -> DNSRecord [ctor] .
+    
+    --- 记录列表
+    sort RecordList .
+    subsort DNSRecord < RecordList .
+    op nil : -> RecordList [ctor] .
+    op __ : RecordList RecordList -> RecordList [ctor assoc id: nil] .
+    
+    --- 查询
+    sort Query .
+    op query : Int DomainName RecordType -> Query [ctor] .
+    
+    --- 响应
+    sort Response .
+    op response : Int DomainName RecordList RecordList Int -> Response [ctor] .
+    
+    --- 变量
+    vars S S2 : String .
+    vars D D2 : DomainName .
+    vars T : RecordType .
+    vars V : String .
+    vars TTL ID : Int .
+    vars R : DNSRecord .
+    vars RL RL2 : RecordList .
+    
+    --- 查找记录
+    op findRecord : DomainName RecordType RecordList -> RecordList .
+    eq findRecord(D, T, nil) = nil .
+    eq findRecord(D, T, < D, T, V, TTL > RL) = < D, T, V, TTL > findRecord(D, T, RL) .
+    eq findRecord(D, T, R RL) = findRecord(D, T, RL) [owise] .
+    
+endfm
+
+--- 测试
+mod DNS-TYPES-TEST is
+    protecting DNS-TYPES .
+    
+    op testDomain : -> DomainName .
+    eq testDomain = "www" . "example" . root .
+    
+    op testRecord : -> DNSRecord .
+    eq testRecord = < "www" . "example" . root, A, "93.184.216.34", 3600 > .
+    
+    op testQuery : -> Query .
+    eq testQuery = query(1, "www" . "example" . root, A) .
+endm

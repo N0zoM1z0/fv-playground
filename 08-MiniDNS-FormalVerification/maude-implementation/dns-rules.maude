@@ -1,0 +1,160 @@
+---
+--- DNS Rewriting Rules Module
+--- 重写规则实现
+--- 对应论文 Section 3.2.3 "DNS Dynamics"
+---
+
+load dns-actors.maude
+
+omod DNS-RULES is
+    protecting DNS-ACTORS .
+    
+    vars ADDR ADDR2 CLIENT RESOLVER NS : Address .
+    vars D D2 TARGET : DomainName .
+    vars T : RecordType .
+    vars ID ID2 : Int .
+    vars V : String .
+    vars TTL : Int .
+    vars R RL ANS AUTH : RecordList .
+    vars C C2 : Cache .
+    vars P P2 : PendingQueries .
+    vars S : ServerList .
+    vars Z : Zone .
+    vars REST : Configuration .
+    vars Q QL : QueryList .
+    vars W : Bool .
+    vars CODE : Int .
+    
+    --- ============================================
+    --- RULE 1: Client 发送查询
+    --- ============================================
+    crl [client-send-query] :
+        < CLIENT | Client | queries: query(ID, D, T); QL, waiting: false >
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        =>
+        < CLIENT | Client | queries: QL, waiting: true >
+        < RESOLVER | Resolver | cache: C, 
+                      pending: pending(ID, D, T, CLIENT, 0) || P, 
+                      sbelt: S >
+        to RESOLVER from CLIENT : query(ID, D, T)
+    if CLIENT =/= RESOLVER .
+    
+    --- ============================================
+    --- RULE 2: Resolver Cache Hit
+    --- 对应论文 Figure 5: resolver-recv-answer-for-client (简化版)
+    --- ============================================
+    crl [resolver-cache-hit] :
+        to RESOLVER from CLIENT : query(ID, D, T)
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        =>
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        to CLIENT from RESOLVER : response(ID, D, lookupCache(D, T, C), nil, 0)
+    if lookupCache(D, T, C) =/= nil .
+    
+    --- ============================================
+    --- RULE 3: Resolver Cache Miss - 向根服务器查询
+    --- ============================================
+    crl [resolver-cache-miss] :
+        to RESOLVER from CLIENT : query(ID, D, T)
+        < RESOLVER | Resolver | cache: C, pending: P, sbelt: S >
+        < NS | Nameserver | zone: Z >
+        =>
+        < RESOLVER | Resolver | cache: C, 
+                      pending: pending(ID, D, T, CLIENT, 1) || P, 
+                      sbelt: S >
+        < NS | Nameserver | zone: Z >
+        to NS from RESOLVER : query(ID, D, T)
+    if lookupCache(D, T, C) == nil /\ NS <- S .
+    
+    --- ============================================
+    --- RULE 4: Resolver 处理响应（Cache & 返回答案）
+    --- ============================================
+    crl [resolver-process-answer] :
+        to RESOLVER from NS : response(ID, D, ANS, AUTH, CODE)
+        < RESOLVER | Resolver | cache: C, pending: pending(ID, D2, T, CLIENT, DEPTH) || P, sbelt: S >
+        =>
+        < RESOLVER | Resolver | cache: addToCache(ANS, C), pending: P, sbelt: S >
+        to CLIENT from RESOLVER : response(ID, D2, ANS, AUTH, CODE)
+    if ANS =/= nil /\ domainMatch(D, D2) .
+    
+    --- ============================================
+    --- RULE 5: Resolver 处理委派（NS 记录）
+    --- ============================================
+    crl [resolver-process-delegation] :
+        to RESOLVER from NS : response(ID, D, nil, AUTH, CODE)
+        < RESOLVER | Resolver | cache: C, pending: pending(ID2, D2, T, CLIENT, DEPTH) || P, sbelt: S >
+        < NS2 | Nameserver | zone: Z >
+        =>
+        < RESOLVER | Resolver | cache: C, 
+                      pending: pending(ID2, D2, T, CLIENT, DEPTH + 1) || P, 
+                      sbelt: S >
+        < NS2 | Nameserver | zone: Z >
+        to NS2 from RESOLVER : query(nextId(ID2, DEPTH), getNSTarget(AUTH), A)
+    if AUTH =/= nil /\ NS2 <- S .
+    
+    --- ============================================
+    --- RULE 6: Nameserver 处理查询
+    --- ============================================
+    crl [nameserver-process] :
+        to NS from RESOLVER : query(ID, D, T)
+        < NS | Nameserver | zone: Z >
+        =>
+        < NS | Nameserver | zone: Z >
+        to RESOLVER from NS : response(ID, D, lookupZone(D, T, Z), lookupNS(D, Z), 0)
+    if lookupZone(D, T, Z) =/= nil or lookupNS(D, Z) =/= nil .
+    
+    --- ============================================
+    --- RULE 7: Client 接收响应
+    --- ============================================
+    rl [client-receive] :
+        to CLIENT from RESOLVER : response(ID, D, ANS, AUTH, CODE)
+        < CLIENT | Client | queries: QL, waiting: true >
+        =>
+        < CLIENT | Client | queries: QL, waiting: false > .
+    
+    --- ============================================
+    --- 辅助操作
+    --- ============================================
+    
+    --- 添加到缓存
+    op addToCache : RecordList Cache -> Cache .
+    eq addToCache(nil, C) = C .
+    eq addToCache(< D, T, V, TTL > RL, C) = 
+        cacheEntry(D, T, < D, T, V, TTL >) ; addToCache(RL, C) .
+    
+    --- 从 NS 记录列表中获取目标
+    op getNSTarget : RecordList -> DomainName .
+    eq getNSTarget(nil) = root .
+    eq getNSTarget(< D, NS, V, TTL > RL) = parseDomain(V) .
+    eq getNSTarget(R RL) = getNSTarget(RL) [owise] .
+    
+    --- 解析字符串为域名（简化）
+    op parseDomain : String -> DomainName .
+    eq parseDomain(S) = root .  --- 简化实现
+    
+    --- 生成下一个消息 ID
+    op nextId : Int Int -> Int .
+    eq nextId(ID, DEPTH) = ID * 100 + DEPTH .
+    
+    --- 检查服务器是否在列表中
+    op _<-_ : Address ServerList -> Bool .
+    eq ADDR <- (ADDR ; S) = true .
+    eq ADDR <- (ADDR2 ; S) = ADDR <- S [owise] .
+    eq ADDR <- noServer = false .
+    
+endom
+
+--- 测试重写
+mod DNS-RULES-TEST is
+    protecting DNS-RULES .
+    
+    --- 简单的测试场景
+    op simpleTest : -> Configuration .
+    eq simpleTest =
+        < "client" | Client | queries: query(1, "www" . "example" . root, A); noQuery, waiting: false >
+        < "resolver" | Resolver | cache: emptyCache, pending: noPending, sbelt: "ns" ; noServer >
+        < "ns" | Nameserver | zone: zoneEntry("www" . "example" . root,
+            < "www" . "example" . root, A, "1.2.3.4", 3600 >
+        ) > .
+        
+endm

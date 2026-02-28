@@ -1,0 +1,178 @@
+---
+--- DNS Analysis Module
+--- LTL 属性定义和模型检查
+--- 对应论文 Section 5.3 "Property Library and Formal Analysis"
+---
+
+load dns-rules.maude
+
+omod DNS-ANALYSIS is
+    protecting DNS-RULES .
+    protecting MODEL-CHECKER .
+    protecting LTL .
+    protecting SATISFACTION .
+    
+    --- ============================================
+    --- 状态谓词定义
+    --- ============================================
+    
+    subsort Configuration < State .
+    
+    --- 谓词: 是否有 Rewrite Blackholing
+    op hasRewriteBlackhole : -> Prop [ctor] .
+    
+    --- 谓词: 客户端是否收到响应
+    op clientAnswered : -> Prop [ctor] .
+    
+    --- 谓词: 查询深度是否超过限制
+    op queryDepthExceeded : -> Prop [ctor] .
+    
+    --- 谓词: Resolver 是否繁忙
+    op resolverBusy : -> Prop [ctor] .
+    
+    --- ============================================
+    --- 变量
+    --- ============================================
+    
+    vars ADDR ADDR2 : Address .
+    vars D : DomainName .
+    vars T : RecordType .
+    vars ID DEPTH : Int .
+    vars QL : QueryList .
+    vars W : Bool .
+    vars C : Cache .
+    vars P : PendingQueries .
+    vars S : ServerList .
+    vars Z : Zone .
+    vars REST : Configuration .
+    vars ANS AUTH : RecordList .
+    vars CODE : Int .
+    
+    --- ============================================
+    --- 谓词实现
+    --- ============================================
+    
+    --- hasRewriteBlackhole: 检查是否有 NXDOMAIN 响应但非空答案
+    eq < ADDR | Client | queries: QL, waiting: W > REST |= hasRewriteBlackhole = false .
+    
+    eq (< ADDR | Resolver | cache: C, pending: P, sbelt: S > 
+        to ADDR2 from ADDR : response(ID, D, ANS, AUTH, CODE)) REST |= hasRewriteBlackhole
+    = (ANS =/= nil and CODE == 3) .  --- NXDOMAIN = 3
+    
+    eq REST |= hasRewriteBlackhole = false [owise] .
+    
+    --- clientAnswered: 客户端收到最终答案
+    eq (to "client" from ADDR : response(ID, D, ANS, AUTH, 0)) REST |= clientAnswered
+    = ANS =/= nil .
+    
+    eq REST |= clientAnswered = false [owise] .
+    
+    --- queryDepthExceeded: 查询深度超过限制 (例如 > 10)
+    eq < ADDR | Resolver | cache: C, 
+                   pending: pending(ID, D, T, ADDR2, DEPTH) || P, 
+                   sbelt: S > REST |= queryDepthExceeded
+    = DEPTH > 10 .
+    
+    eq REST |= queryDepthExceeded = false [owise] .
+    
+    --- resolverBusy: Resolver 有待处理查询
+    eq < "resolver" | Resolver | cache: C, pending: noPending, sbelt: S > REST |= resolverBusy = false .
+    
+    eq < "resolver" | Resolver | cache: C, pending: P, sbelt: S > REST |= resolverBusy
+    = P =/= noPending .
+    
+    eq REST |= resolverBusy = false [owise] .
+    
+endom
+
+--- ============================================
+--- QuaTEx 风格的定量查询 (使用方程模拟)
+--- ============================================
+
+omod DNS-QUANTITATIVE is
+    protecting DNS-ANALYSIS .
+    protecting FLOAT .
+    
+    --- 定量指标类型
+    sort Metric .
+    
+    --- 指标: 放大倍数
+    op amplificationFactor : Configuration -> Float .
+    
+    --- 指标: 查询成功率
+    op successRate : Configuration -> Float .
+    
+    --- 指标: 平均响应时间 (需要 TimedConfiguration)
+    op avgResponseTime : Configuration -> Float .
+    
+    --- 变量
+    vars ADDR ADDR2 : Address .
+    vars D : DomainName .
+    vars T : RecordType .
+    vars ID : Int .
+    vars W : Bool .
+    vars C : Cache .
+    vars P : PendingQueries .
+    vars S : ServerList .
+    vars REST : Configuration .
+    vars ANS AUTH : RecordList .
+    vars CODE : Int .
+    vars N M : Int .
+    vars F : Float .
+    
+    --- 计算客户端发送的查询数
+    op countClientQueries : Configuration -> Int .
+    eq countClientQueries(
+        < ADDR | Client | queries: QL, waiting: W > REST
+    ) = 1 + countClientQueries(REST) .
+    eq countClientQueries(REST) = 0 [owise] .
+    
+    --- 计算 Resolver 发送的查询数 (通过 pending 数量估算)
+    op countResolverQueries : Configuration -> Int .
+    eq countResolverQueries(
+        < "resolver" | Resolver | cache: C, pending: P, sbelt: S > REST
+    ) = pendingCount(P) + countResolverQueries(REST) .
+    eq countResolverQueries(REST) = 0 [owise] .
+    
+    op pendingCount : PendingQueries -> Int .
+    eq pendingCount(noPending) = 0 .
+    eq pendingCount(pending(ID, D, T, ADDR, N) || P) = 1 + pendingCount(P) .
+    
+    --- 放大倍数计算
+    eq amplificationFactor(REST) = 
+        let clientQ := countClientQueries(REST) in
+        let resolverQ := countResolverQueries(REST) in
+        if clientQ == 0 then 0.0
+        else float(resolverQ) / float(clientQ) .
+    
+    --- 成功率计算 (简化版)
+    eq successRate(
+        (to "client" from ADDR : response(ID, D, ANS, AUTH, 0)) REST
+    ) = 1.0 .
+    eq successRate(REST) = 0.0 [owise] .
+    
+    --- 平均响应时间 (占位符，需要完整时间模型)
+    eq avgResponseTime(REST) = 0.0 .
+    
+endom
+
+--- ============================================
+--- 测试属性
+--- ============================================
+
+mod DNS-ANALYSIS-TEST is
+    protecting DNS-ANALYSIS .
+    
+    --- 测试配置 1: 正常配置
+    op normalConfig : -> Configuration .
+    eq normalConfig =
+        < "client" | Client | queries: noQuery, waiting: true >
+        < "resolver" | Resolver | cache: emptyCache, pending: noPending, sbelt: "ns" ; noServer >
+        to "client" from "resolver" : response(1, "www" . "example" . root, 
+            < "www" . "example" . root, A, "1.2.3.4", 3600 >, nil, 0) .
+    
+    --- 测试属性
+    op testProps : -> Prop .
+    eq testProps = <> clientAnswered .  --- 最终客户端收到答案
+    
+endm

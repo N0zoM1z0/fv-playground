@@ -1,0 +1,117 @@
+---
+--- DoS Amplification Attack Scenario
+--- 对应论文 Section 6.2 "NXNS Attack"
+--- 展示大量 NS 记录导致的放大效应
+---
+
+load dns-analysis.maude
+
+omod DNS-AMPLIFICATION is
+    protecting DNS-QUANTITATIVE .
+    
+    --- ============================================
+    --- 攻击场景: NXNS 放大
+    --- ============================================
+    
+    --- 辅助操作: 生成 N 条 NS 记录
+    op genNSRecords : Int -> RecordList .
+    eq genNSRecords(0) = nil .
+    eq genNSRecords(s N) = 
+        < "attack" . root, NS, "ns" + string(N, 10) + ".attack.com", 1 >
+        genNSRecords(N) .
+    
+    --- 攻击者的 Zone: 包含 10 个 NS 记录
+    op attackZone : -> Zone .
+    eq attackZone = zoneEntry("attack" . root,
+        < "attack" . root, SOA, "ns0.attack.com", 3600 >
+        < "attack" . root, NS, "ns0.attack.com", 1 >
+        < "attack" . root, NS, "ns1.attack.com", 1 >
+        < "attack" . root, NS, "ns2.attack.com", 1 >
+        < "attack" . root, NS, "ns3.attack.com", 1 >
+        < "attack" . root, NS, "ns4.attack.com", 1 >
+        < "attack" . root, NS, "ns5.attack.com", 1 >
+        < "attack" . root, NS, "ns6.attack.com", 1 >
+        < "attack" . root, NS, "ns7.attack.com", 1 >
+        < "attack" . root, NS, "ns8.attack.com", 1 >
+        < "attack" . root, NS, "ns9.attack.com", 1 >
+    ) .
+    
+    --- 攻击配置
+    op amplificationAttack : -> Configuration .
+    eq amplificationAttack =
+        < "client" | Client | 
+            queries: query(1, "attack" . root, A); noQuery, 
+            waiting: false >
+        < "resolver" | Resolver | 
+            cache: emptyCache, 
+            pending: noPending, 
+            sbelt: "auth" ; noServer >
+        < "auth" | Nameserver | zone: attackZone > .
+    
+    --- ============================================
+    --- 定量分析
+    --- ============================================
+    
+    --- 计算当前配置的放大倍数
+    op currentAmplification : -> Float .
+    eq currentAmplification = amplificationFactor(amplificationAttack) .
+    
+    --- 评估放大攻击 (简化模拟)
+    op evaluateAmplification : Configuration -> Float .
+    eq evaluateAmplification(
+        < "client" | Client | queries: QL, waiting: W >
+        < "resolver" | Resolver | cache: C, pending: P, sbelt: S >
+        < "auth" | Nameserver | zone: Z >
+    ) = float(pendingCount(P)) .
+    eq evaluateAmplification(REST) = 0.0 [owise] .
+    
+endom
+
+--- ============================================
+--- SMC (统计模型检查) 模拟
+--- ============================================
+
+omod DNS-SMC is
+    protecting DNS-AMPLIFICATION .
+    protecting RANDOM .
+    
+    --- 丢包率配置
+    op dropRate : -> Float .
+    eq dropRate = 0.1 .  --- 10% 丢包率
+    
+    --- 模拟单次查询过程
+    op simulateOneQuery : Configuration -> Configuration .
+    --- 简化实现：直接返回配置
+    eq simulateOneQuery(C) = C .
+    
+    --- 运行 N 次模拟收集统计
+    op runSimulations : Int Configuration -> List{Float} .
+    eq runSimulations(0, C) = nil .
+    eq runSimulations(s N, C) = 
+        evaluateAmplification(simulateOneQuery(C)) ,
+        runSimulations(N, C) .
+    
+endom
+
+--- ============================================
+--- 执行指令
+--- ============================================
+
+--- 1. 加载模块
+--- Maude> load dns-amplification.maude
+
+--- 2. 查看攻击配置
+--- Maude> show config .
+
+--- 3. 计算放大倍数
+--- Maude> red amplificationFactor(amplificationAttack) .
+
+--- 4. 模拟单次查询
+--- Maude> rew amplificationAttack .
+
+--- 5. 搜索可能的放大状态
+--- Maude> search amplificationAttack =>* C:Configuration 
+---          such that amplificationFactor(C) > 5.0 .
+
+--- 6. 对比安全配置
+--- Maude> red amplificationFactor(safeConfig) .
