@@ -393,15 +393,37 @@ class Resolver:
         return messages
     
     def _handle_cname(self, msg: Message, cname_record: DNSRecord, current_time: float) -> List[Message]:
-        """处理CNAME链"""
+        """处理CNAME链 - 修复版"""
         target = cname_record.value
         
-        # 检查循环
-        for pending in self.pending.values():
-            if target in pending.get('targets', []):
-                self.stats['loops_detected'] += 1
-                print(f"  [LOOP DETECTED] CNAME cycle: {' -> '.join(pending['targets'])} -> {target}")
-                return []
+        # 找到对应的 pending query - 关键修复
+        pending_id = None
+        for pid, pending in self.pending.items():
+            if msg.name in pending.get('targets', []):
+                pending_id = pid
+                break
+        
+        if pending_id is None:
+            # 没有找到对应的 pending query
+            pending_id = msg.msg_id
+            self.pending[pending_id] = {
+                'original': msg,
+                'depth': 0,
+                'start_time': current_time,
+                'targets': [msg.name]
+            }
+        
+        pending = self.pending[pending_id]
+        
+        # 检查循环 - 关键修复：检查目标是否已在链中
+        if target in pending.get('targets', []):
+            self.stats['loops_detected'] += 1
+            print(f"  [LOOP DETECTED] CNAME cycle: {' -> '.join(pending['targets'])} -> {target}")
+            return []
+        
+        # 更新跟踪
+        pending['targets'].append(target)
+        pending['depth'] += 1
         
         # 继续解析CNAME目标
         messages = []
@@ -415,12 +437,6 @@ class Resolver:
                 record_type=RecordType.A
             )
             messages.append(query)
-        
-        # 更新跟踪
-        for pending in self.pending.values():
-            if msg.name in pending.get('targets', []):
-                pending['targets'].append(target)
-                pending['depth'] += 1
         
         return messages
     
@@ -513,18 +529,14 @@ class QuaTExQuery:
 # =============================================================================
 
 class DNSSimulator:
-    """完整的DNS离散事件模拟器"""
+    """完整的DNS离散事件模拟器 - 修复版"""
     
     def __init__(self, seed: Optional[int] = None):
         self.seed = seed
         self.scheduler: Optional[GlobalScheduler] = None
         self.resolver: Optional[Resolver] = None
         self.auth_servers: Dict[str, Any] = None
-        self.client_stats = {
-            'sent': 0,
-            'received': 0,
-            'response_times': []
-        }
+        self.query_start_times: Dict[int, float] = {}  # 记录每个查询的开始时间
     
     def setup(self, zones: List[Dict], drop_rate: float = 0.05):
         """设置模拟环境"""
@@ -547,72 +559,104 @@ class DNSSimulator:
         self.resolver = Resolver("resolver", root_servers)
     
     def run_simulation(self, queries: List[Dict], max_time: float = 10.0) -> Dict:
-        """运行单次模拟"""
-        start_time = 0.0
+        """运行单次模拟 - 修复版"""
+        # 重置统计
+        client_sent = 0
+        client_received = 0
+        response_times = []
+        self.query_start_times = {}
         
         # 发送初始查询
         for q in queries:
+            msg_id = q.get('id', 1)
             msg = Message(
-                msg_id=q.get('id', 1),
+                msg_id=msg_id,
                 msg_type=MessageType.QUERY,
                 source="client",
                 destination="resolver",
                 name=q['name'],
                 record_type=q.get('type', RecordType.A)
             )
-            self.scheduler.send_message(msg)
-            self.client_stats['sent'] += 1
+            if self.scheduler.send_message(msg):
+                client_sent += 1
+                self.query_start_times[msg_id] = 0.0  # 记录开始时间
         
-        # 运行离散事件模拟
-        processed = self.scheduler.simulate(max_time=max_time)
+        # 主事件循环 - 关键修复：正确处理消息传递
+        event_count = 0
+        max_events = 1000
         
-        # 处理所有消息
-        for timed_msg in processed:
+        while self.scheduler.global_time < max_time and event_count < max_events:
+            # 获取下一个消息
+            timed_msg = self.scheduler.step()
+            if not timed_msg:
+                break
+            
+            event_count += 1
             msg = timed_msg.msg
             dest = msg.destination
+            current_time = self.scheduler.global_time
+            
+            # 处理消息
+            new_messages = []
             
             if dest == "resolver" and self.resolver:
-                new_msgs = self.resolver.process(timed_msg, self.scheduler)
-                for new_msg in new_msgs:
-                    self.scheduler.send_message(new_msg)
+                # Resolver 处理消息
+                new_messages = self.resolver.process(timed_msg, self.scheduler)
             
             elif dest in self.auth_servers:
+                # 权威服务器处理查询
                 server = self.auth_servers[dest]
                 server['queries'] += 1
                 
-                # 查询zone
+                # 查询 zone
                 records = server['zone'].lookup(msg.name, msg.record_type)
                 ns_records = server['zone'].lookup(msg.name, RecordType.NS)
                 
+                # 构造响应
                 response = Message(
                     msg_id=msg.msg_id,
                     msg_type=MessageType.RESPONSE,
                     source=dest,
-                    destination=msg.source,
+                    destination=msg.source,  # 返回给发送者
                     name=msg.name,
                     record_type=msg.record_type,
                     records=records,
                     delegations=ns_records if not records else []
                 )
-                self.scheduler.send_message(response)
+                new_messages.append(response)
                 server['responses'] += 1
             
             elif dest == "client":
-                self.client_stats['received'] += 1
-                response_time = timed_msg.delivery_time - start_time
-                self.client_stats['response_times'].append(response_time)
+                # 客户端收到响应
+                client_received += 1
+                
+                # 计算响应时间
+                start_time = self.query_start_times.get(msg.msg_id, 0.0)
+                response_time = current_time - start_time
+                response_times.append(response_time)
+            
+            # 调度新消息
+            for new_msg in new_messages:
+                self.scheduler.send_message(new_msg)
+        
+        # 计算放大倍数：Resolver 发送的总消息数 / Client 发送的查询数
+        # 注意：这里计算的是 Resolver 产生的消息数
+        resolver_sent = self.resolver.msg_counter if self.resolver else 0
         
         # 收集结果
-        return {
+        result = {
             'simulation_time': self.scheduler.global_time,
-            'client_sent': self.client_stats['sent'],
-            'client_received': self.client_stats['received'],
-            'resolver_sent': self.scheduler.messages_sent - self.client_stats['sent'],
+            'client_sent': client_sent,
+            'client_received': client_received,
+            'resolver_sent': resolver_sent,
             'resolver_processed': self.resolver.stats['queries_received'] if self.resolver else 0,
-            'success_rate': self.client_stats['received'] / self.client_stats['sent'] if self.client_stats['sent'] > 0 else 0,
-            'avg_response_time': statistics.mean(self.client_stats['response_times']) if self.client_stats['response_times'] else 0,
-            'amplification': (self.scheduler.messages_sent - self.client_stats['sent']) / self.client_stats['sent'] if self.client_stats['sent'] > 0 else 0
+            'success_rate': client_received / client_sent if client_sent > 0 else 0,
+            'avg_response_time': statistics.mean(response_times) if response_times else 0,
+            'amplification': resolver_sent / client_sent if client_sent > 0 else 0,
+            'loops_detected': self.resolver.stats['loops_detected'] if self.resolver else 0
         }
+        
+        return result
 
 
 # =============================================================================
