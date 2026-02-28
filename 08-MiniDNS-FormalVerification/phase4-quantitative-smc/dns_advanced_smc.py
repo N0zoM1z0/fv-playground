@@ -29,7 +29,7 @@ from dns_actor_model import (
 # 核心组件：时间/概率模型
 # =============================================================================
 
-@dataclass(order=True)
+@dataclass
 class TimedMessage:
     """
     带时间戳的消息
