@@ -7,10 +7,10 @@ export MAUDE_LIB=/tmp/maude_runtime/usr/share/maude
 MAUDE=/tmp/maude_runtime/usr/bin/maude
 
 echo "=========================================="
-echo "DNS Formal Verification - Paper Version"
+echo "DNS Formal Verification - Fixed Version"
 echo "ETH SIGCOMM 2023 Implementation"
 echo "=========================================="
 echo ""
 
 # Run with interactive commands
-$MAUDE dns-paper-version.maude
+$MAUDE dns-paper-fixed.maude

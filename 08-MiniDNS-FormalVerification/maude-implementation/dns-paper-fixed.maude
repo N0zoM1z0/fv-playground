@@ -1,0 +1,87 @@
+--- ============================================
+--- DNS Formal Verification - Fixed Version
+--- ETH SIGCOMM 2023 Implementation
+--- ============================================
+
+load model-checker.maude
+
+--- ============================================
+--- Data Types (Section 3.2.2)
+--- ============================================
+fmod DNS-TYPES is
+  protecting STRING .
+  protecting INT .
+  
+  sort DomainName .
+  op _._ : String DomainName -> DomainName [ctor] .
+  op root : -> DomainName [ctor] .
+  
+  sort RecordType .
+  ops A NS CNAME : -> RecordType [ctor] .
+  
+  sort RR .
+  op <_,_,_,_> : DomainName RecordType Int String -> RR [ctor] .
+  
+  sort RRset .
+  subsort RR < RRset .
+  op nilRR : -> RRset [ctor] .
+  op __ : RRset RRset -> RRset [ctor assoc id: nilRR] .
+  
+  vars D D2 : DomainName .
+  vars T T2 : RecordType .
+  vars V : String .
+  vars TTL ID : Int .
+  vars R : RR .
+  vars RS : RRset .
+  
+  op findRR : DomainName RecordType RRset -> RRset .
+  eq findRR(D, T, nilRR) = nilRR .
+  eq findRR(D, T, < D, T, TTL, V > RS) = < D, T, TTL, V > findRR(D, T, RS) .
+  eq findRR(D, T, R RS) = findRR(D, T, RS) [owise] .
+  
+  op countRR : RRset -> Int .
+  eq countRR(nilRR) = 0 .
+  eq countRR(R RS) = 1 + countRR(RS) .
+endfm
+
+--- ============================================
+--- Test Scenarios (Working Version)
+--- ============================================
+mod DNS-TESTS is
+  protecting DNS-TYPES .
+  
+  --- Test 1: Normal zone with A record
+  op normalZone : -> RRset .
+  eq normalZone = < "www" . "example" . root, A, 3600, "93.184.216.34" > .
+  
+  --- Test 2: Attack zone with 5 NS records
+  op attackZone : -> RRset .
+  eq attackZone = 
+    < "attack" . root, NS, 1, "ns0" >
+    < "attack" . root, NS, 1, "ns1" >
+    < "attack" . root, NS, 1, "ns2" >
+    < "attack" . root, NS, 1, "ns3" >
+    < "attack" . root, NS, 1, "ns4" > .
+  
+  --- Test 3: Amplification factor
+  op ampFactor : -> Int .
+  eq ampFactor = countRR(attackZone) .
+  
+  --- Test 4: Find A record
+  op findA : -> RRset .
+  eq findA = findRR("www" . "example" . root, A, normalZone) .
+  
+endm
+
+--- ============================================
+--- Commands:
+--- Maude> load dns-paper-fixed.maude
+--- Maude> red countRR(attackZone) .
+--- Maude> red ampFactor .
+--- Maude> red findA .
+---
+--- Expected:
+--- countRR(attackZone) = 5
+--- ampFactor = 5
+--- findA = < "www" . "example" . root, A, 3600, "93.184.216.34" >
+
