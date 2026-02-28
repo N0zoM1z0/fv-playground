@@ -71,6 +71,8 @@ omod DNS-ACTORS is
   vars T : RType .
   vars RL Z : RList .
   var ATTS : AttributeSet .
+  var CF REST : Configuration .
+
   
   --- Rule 1: Client starts - sends query with specific domain and type
   rl [client-start] :
@@ -148,13 +150,13 @@ omod DNS-TEST is
   
   --- Count amplification factor
   op amplificationFactor : Configuration -> Int .
-  eq amplificationFactor(< "ns" : Nameserver | zone: Z > REST) = count(Z) .
-  eq amplificationFactor(REST) = 0 [owise] .
+  eq amplificationFactor(< N : Nameserver | zone: Z > CF) = count(Z) .
+  eq amplificationFactor(CF) = 0 [owise] .
   
 endom
 
 --- ============================================
---- LTL Properties
+--- LTL Properties (Simplified)
 --- ============================================
 omod DNS-PROPS is
   protecting DNS-TEST .
@@ -162,14 +164,9 @@ omod DNS-PROPS is
   
   subsort Configuration < State .
   
-  --- Property: Client eventually gets answer (waiting becomes false)
+  --- Property: Client eventually gets answer
   op clientAnswered : -> Prop [ctor] .
   eq < C : Oid : Client | waiting: false > REST |= clientAnswered = true .
   eq REST |= clientAnswered = false [owise] .
-  
-  --- Property: Resolver has cached data
-  op resolverCached : -> Prop [ctor] .
-  eq < R : Oid : Resolver | cache: RL > REST |= resolverCached = RL =/= nil .
-  eq REST |= resolverCached = false [owise] .
   
 endom

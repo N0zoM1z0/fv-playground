@@ -1,0 +1,18 @@
+--- Simple Test for DNS Implementation
+
+load dns-complete.maude
+
+--- Test 1: Check normal scenario configuration
+red normalScenario .
+
+--- Test 2: Check amplification scenario
+red amplificationScenario .
+
+--- Test 3: Count records in amplification scenario
+red amplificationFactor(amplificationScenario) .
+
+--- Test 4: Run rewrite on normal scenario
+rew normalScenario .
+
+--- Test 5: Check if client gets answered (LTL)
+red normalScenario |= clientAnswered .
